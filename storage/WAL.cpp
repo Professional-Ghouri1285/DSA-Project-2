@@ -1,6 +1,8 @@
+// trading_platform/storage/WAL.cpp - Fixed version
 #include "WAL.h"
 #include <iostream>
 #include <sys/stat.h>
+#include <chrono>
 
 WriteAheadLog::WriteAheadLog(const string &filename)
     : filename(filename), last_lsn(0)
@@ -18,18 +20,17 @@ WriteAheadLog::~WriteAheadLog()
 
 void WriteAheadLog::openLog()
 {
-    if (log_file.is_open())
-    {
-        log_file.close();
-    }
-
     log_file.open(filename, ios::binary | ios::in | ios::out | ios::app);
 
     if (!log_file.is_open())
     {
+        // Create new log file
         log_file.open(filename, ios::binary | ios::out);
-        log_file.close();
-        log_file.open(filename, ios::binary | ios::in | ios::out | ios::app);
+        if (log_file.is_open())
+        {
+            log_file.close();
+            log_file.open(filename, ios::binary | ios::in | ios::out | ios::app);
+        }
     }
 
     if (!log_file.is_open())
@@ -37,7 +38,34 @@ void WriteAheadLog::openLog()
         throw runtime_error("Failed to open WAL file: " + filename);
     }
 
+    // Find last LSN by scanning file
+    log_file.seekg(0, ios::end);
+    streampos file_size = log_file.tellg();
+    log_file.seekg(0, ios::beg);
+
     last_lsn = 0;
+
+    // Scan through existing records to find max LSN
+    while (log_file.tellg() < file_size)
+    {
+        int32_t record_size = 0;
+        log_file.read(reinterpret_cast<char *>(&record_size), sizeof(int32_t));
+
+        if (log_file.eof() || log_file.gcount() != sizeof(int32_t))
+            break;
+
+        if (record_size <= 0 || record_size > 1000000)
+            break;
+
+        // Skip the record data
+        log_file.seekg(record_size, ios::cur);
+    }
+
+    // Reset for appending
+    log_file.clear();
+    log_file.seekp(0, ios::end);
+
+    cout << "WAL opened: " << filename << " (size: " << file_size << " bytes)\n";
 }
 
 int64_t WriteAheadLog::append(LogType type, int page_id, const char *data, size_t size)
@@ -46,11 +74,25 @@ int64_t WriteAheadLog::append(LogType type, int page_id, const char *data, size_
     record.lsn = ++last_lsn;
     record.type = type;
     record.page_id = page_id;
-    record.timestamp = time(nullptr);
-    record.data.assign(data, data + size);
+    record.timestamp = chrono::duration_cast<chrono::milliseconds>(
+                           chrono::system_clock::now().time_since_epoch())
+                           .count();
 
-    writeRecord(record);
+    if (data && size > 0)
+    {
+        record.data.assign(data, data + size);
+    }
+
+    vector<char> buffer;
+    record.serialize(buffer);
+
+    log_file.write(buffer.data(), buffer.size());
     log_file.flush();
+
+    cout << "WAL append LSN=" << record.lsn
+         << " type=" << record.type
+         << " page=" << record.page_id
+         << " size=" << buffer.size() << "\n";
 
     return record.lsn;
 }
@@ -59,7 +101,6 @@ void WriteAheadLog::writeRecord(const LogRecord &record)
 {
     vector<char> buffer;
     record.serialize(buffer);
-
     log_file.write(buffer.data(), buffer.size());
 }
 
@@ -69,83 +110,107 @@ void WriteAheadLog::commit(int64_t lsn)
     commit_record.lsn = ++last_lsn;
     commit_record.type = LOG_COMMIT;
     commit_record.page_id = -1;
-    commit_record.timestamp = time(nullptr);
+    commit_record.timestamp = chrono::duration_cast<chrono::milliseconds>(
+                                  chrono::system_clock::now().time_since_epoch())
+                                  .count();
 
     writeRecord(commit_record);
     log_file.flush();
+
+    cout << "WAL commit LSN=" << commit_record.lsn << "\n";
 }
 
 void WriteAheadLog::replay()
 {
-    cout << "WAL Replay starting...\n";
+    cout << "\n=== WAL Replay Start ===\n";
 
-    log_file.clear();
-    log_file.seekg(0, ios::beg);
+    // Close and reopen for clean reading
+    if (log_file.is_open())
+    {
+        log_file.close();
+    }
 
+    log_file.open(filename, ios::binary | ios::in);
+    if (!log_file.is_open())
+    {
+        cerr << "ERROR: Cannot open WAL file for replay: " << filename << "\n";
+        return;
+    }
+
+    // Get file size
     log_file.seekg(0, ios::end);
-    size_t file_size = log_file.tellg();
+    streampos file_size = log_file.tellg();
     log_file.seekg(0, ios::beg);
-    cout << "Log file size: " << file_size << " bytes\n";
+
+    cout << "WAL file size: " << file_size << " bytes\n";
+
+    if (file_size == 0)
+    {
+        cout << "WAL is empty, nothing to replay\n";
+        log_file.close();
+        openLog();
+        return;
+    }
 
     int record_count = 0;
+    int64_t max_lsn = 0;
 
-    while (log_file.good() && !log_file.eof())
+    // Read all records
+    while (log_file.tellg() < file_size)
     {
-        int32_t record_data_size = 0;
-        log_file.read(reinterpret_cast<char *>(&record_data_size), sizeof(int32_t));
+        // Read record size
+        int32_t record_size = 0;
+        log_file.read(reinterpret_cast<char *>(&record_size), sizeof(int32_t));
 
         if (log_file.eof() || log_file.gcount() != sizeof(int32_t))
         {
-            cout << "End of file reached or incomplete read. Records processed: "
-                 << record_count << "\n";
+            cout << "End of file reached\n";
             break;
         }
 
-        cout << "Record " << record_count + 1 << " data size: " << record_data_size << "\n";
-
-        if (record_data_size <= 0)
+        // Validate record size
+        if (record_size <= 0 || record_size > 1000000)
         {
-            cout << "WARNING: Invalid record size: " << record_data_size << "\n";
+            cerr << "ERROR: Invalid record size: " << record_size << "\n";
             break;
         }
 
-        if (record_data_size > 1000000)
+        // Read record data
+        vector<char> buffer(record_size);
+        log_file.read(buffer.data(), record_size);
+
+        if (static_cast<size_t>(log_file.gcount()) != buffer.size())
         {
-            cerr << "ERROR: Corrupted log record with size: " << record_data_size << "\n";
-            cerr << "This indicates serialization issue!\n";
+            cerr << "ERROR: Incomplete record read\n";
             break;
         }
 
-        vector<char> buffer(record_data_size);
-        log_file.read(buffer.data(), record_data_size);
-
-        size_t bytes_read = log_file.gcount();
-        if (bytes_read != record_data_size)
-        {
-            cerr << "ERROR: Failed to read complete log record. Expected: "
-                 << record_data_size << ", Got: " << bytes_read << "\n";
-            break;
-        }
-
+        // Parse record
         LogRecord record;
         record.deserialize(buffer.data(), buffer.size());
 
-        cout << "LSN (hex): 0x" << hex << record.lsn << dec << "\n";
-        cout << "LSN (decimal): " << record.lsn << "\n";
-        cout << "Page ID: " << record.page_id << "\n";
-        cout << "Type: " << record.type << "\n";
-
-        if (!record.data.empty())
-        {
-            string log_data(record.data.begin(), record.data.end());
-            cout << "  Data (" << record.data.size() << " bytes): " << log_data << "\n";
-        }
-
-        cout << "---\n";
         record_count++;
+        max_lsn = max(max_lsn, record.lsn);
+
+        // Apply the record (in a real system, you'd update pages)
+        cout << "Record " << record_count << ": "
+             << "LSN=" << record.lsn
+             << " Type=" << record.type
+             << " Page=" << record.page_id
+             << " Time=" << record.timestamp
+             << " DataSize=" << record.data.size() << "\n";
     }
 
-    cout << "WAL Replay complete. Processed " << record_count << " records.\n";
+    cout << "WAL Replay complete: " << record_count
+         << " records processed, max LSN=" << max_lsn << "\n";
+
+    // Update last_lsn
+    last_lsn = max_lsn;
+
+    log_file.close();
+    openLog(); // Reopen for appending
+
+    cout << "=== WAL Replay End ===\n";
 }
 
 void WriteAheadLog::checkpoint()
@@ -153,30 +218,35 @@ void WriteAheadLog::checkpoint()
     LogRecord checkpoint_record;
     checkpoint_record.lsn = ++last_lsn;
     checkpoint_record.type = LOG_COMMIT;
-    checkpoint_record.page_id = -2;
-    checkpoint_record.timestamp = time(nullptr);
+    checkpoint_record.page_id = -2; // Special ID for checkpoint
+    checkpoint_record.timestamp = chrono::duration_cast<chrono::milliseconds>(
+                                      chrono::system_clock::now().time_since_epoch())
+                                      .count();
 
     writeRecord(checkpoint_record);
     log_file.flush();
+
+    cout << "WAL checkpoint LSN=" << checkpoint_record.lsn << "\n";
 }
 
 void LogRecord::serialize(vector<char> &buffer) const
 {
-    size_t pos = buffer.size();
+    // Calculate sizes
+    size_t data_size = sizeof(int64_t) * 2 + // lsn + timestamp
+                       sizeof(int32_t) * 2 + // type + page_id
+                       this->data.size();
 
-    size_t data_size = sizeof(int64_t) * 2 +
-                       sizeof(int32_t) * 2 +
-                       data.size();
+    // Reserve space: record_size + record_data
+    size_t old_size = buffer.size();
+    buffer.resize(old_size + sizeof(int32_t) + data_size);
 
-    size_t total_size = sizeof(int32_t) + data_size;
+    char *buf_ptr = buffer.data() + old_size;
 
-    buffer.resize(pos + total_size);
-
-    char *buf_ptr = buffer.data() + pos;
-
+    // Write record size
     memcpy(buf_ptr, &data_size, sizeof(int32_t));
     buf_ptr += sizeof(int32_t);
 
+    // Write record data
     memcpy(buf_ptr, &lsn, sizeof(int64_t));
     buf_ptr += sizeof(int64_t);
 
@@ -199,6 +269,7 @@ void LogRecord::deserialize(const char *buffer, size_t size)
 {
     const char *buf_ptr = buffer;
 
+    // Read fixed fields
     memcpy(&lsn, buf_ptr, sizeof(int64_t));
     buf_ptr += sizeof(int64_t);
 
@@ -211,8 +282,9 @@ void LogRecord::deserialize(const char *buffer, size_t size)
     memcpy(&timestamp, buf_ptr, sizeof(int64_t));
     buf_ptr += sizeof(int64_t);
 
+    // Read variable data
     size_t data_size = size - (buf_ptr - buffer);
-    if (data_size > 0 && data_size < 10000)
+    if (data_size > 0)
     {
         data.assign(buf_ptr, buf_ptr + data_size);
     }

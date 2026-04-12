@@ -1,0 +1,109 @@
+/* frontend/style.css */
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+}
+
+.login-container {
+    max-width: 400px;
+    margin: 100px auto;
+    padding: 30px;
+    background: white;
+    border-radius: 10px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+}
+
+.dashboard-container {
+    background: white;
+    border-radius: 10px;
+    padding: 20px;
+    margin-top: 20px;
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+}
+
+.stock-card {
+    transition: transform 0.3s;
+    cursor: pointer;
+}
+
+.stock-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+}
+
+.positive-change {
+    color: #28a745;
+    font-weight: bold;
+}
+
+.negative-change {
+    color: #dc3545;
+    font-weight: bold;
+}
+
+.order-book {
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.bid-level {
+    background: rgba(40, 167, 69, 0.1);
+    border-left: 4px solid #28a745;
+    margin-bottom: 2px;
+}
+
+.ask-level {
+    background: rgba(220, 53, 69, 0.1);
+    border-left: 4px solid #dc3545;
+    margin-bottom: 2px;
+}
+
+.trade-history {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.trade-item {
+    padding: 8px;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.trade-item:last-child {
+    border-bottom: none;
+}
+
+.portfolio-item {
+    transition: background-color 0.2s;
+}
+
+.portfolio-item:hover {
+    background-color: #f8f9fa;
+}
+
+.loading {
+    text-align: center;
+    padding: 40px;
+    color: #6c757d;
+}
+
+.refresh-btn {
+    cursor: pointer;
+    transition: transform 0.3s;
+}
+
+.refresh-btn:hover {
+    transform: rotate(180deg);
+}
+
+@media (max-width: 768px) {
+    .login-container {
+        margin: 20px;
+        padding: 20px;
+    }
+
+    .dashboard-container {
+        padding: 10px;
+        margin: 10px;
+    }
+}

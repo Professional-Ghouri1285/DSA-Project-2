@@ -1,0 +1,21 @@
+# Build output
+build/
+cleaned_code/build/
+*.o
+*.a
+
+# Compiled binaries
+trading_platform
+trading_platform_day5
+btree_memory_test
+test/quick_test
+
+# Database & log files (runtime artifacts)
+*.db
+*.db.backup
+*.log
+
+# Test leftover files
+test/test_users.db
+test/trading.db
+test/trading.log
